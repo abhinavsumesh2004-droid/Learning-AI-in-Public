@@ -1,13 +1,19 @@
-# Stage 1 — States and Serialization
+# Stage 1 — Agent Architecture & State Machines
 
-A small demo of durable agent state: keeping a conversation's state in memory,
-writing it to disk, and resuming it after the process exits.
+Small demos of durable agent state and explicit state machines: keeping a
+conversation's state in memory, writing it to disk, resuming it after the
+process exits, and driving transitions through a table instead of ad-hoc code.
+
+> **Scope:** these are learning sketches to get the concepts clear, not
+> production code. Error handling, atomic writes, and complete transition
+> coverage are intentionally left for later.
 
 ## Files
 
 | File | Purpose |
 | --- | --- |
-| `states_serialize.py` | Demo loop: load state, append input, save state |
+| `states_serialize.py` | Day 1: load state, append input, save state |
+| `day2-state_machines.py` | Day 2: transition table, events, resume |
 | `state.json` | Checkpoints, keyed by user id |
 | `sessions.json` | Registry of known sessions (status, metadata) |
 
@@ -34,7 +40,7 @@ load (deserialize) -> mutate one user's record -> dump (serialize) the whole col
 The file is the source of truth for existence; the dict is the source of truth
 during a run.
 
-## What was learned
+## Day 1 — States and serialization
 
 - **State vs. serialization.** State is the in-memory dict. Serialization is
   turning it into bytes on disk; deserialization is reading it back. Without the
@@ -59,10 +65,41 @@ during a run.
 - **One source of truth.** If both the registry and the checkpoint file can
   answer "does this user exist?", they can disagree.
 
+## Day 2 — State machines
+
+A state machine is: a set of named **states**, a set of **events**, and a
+**transition table** `(state, event) -> next_state`. Nothing else writes the
+state.
+
+- **Events, not menu numbers.** The menu maps key presses to events
+  (`receive_query`, `received_input`, `user_pause`); the table decides where
+  they lead.
+- **Illegal transitions are rejected.** A missing `(state, event)` pair is a
+  guard. Rejection must actually stop or re-drive the flow — re-prompting and
+  then continuing anyway is not a guard.
+- **Persist the state name.** The checkpoint stores `current_pos` so a new
+  process can resume; an unknown value on load is corruption, not something to
+  guess.
+- **Resume is a transition, not a reset.** Don't rewrite the saved state to
+  `start` just to reuse a transition. That makes the state lie about the data
+  ("state laundering").
+- **Cycles are edges.** "Give more input" is `processing_input -> awaiting_input`
+  in the table — not two direct assignments inside a `while True`.
+- **No loose edges, no unreachable states.** Every resumable state needs a
+  resume path, every declared state must be reachable from the initial state,
+  and terminal states must be reachable too.
+- **DAG vs. cyclic.** This machine is cyclic: input → process → input again. A
+  DAG cannot express that.
+
+The macro loop (`while True`) still drives the machine directly in
+`day2-state_machines.py`; inverting it so the loop only dispatches on the
+current state is the next exercise (and what LangGraph formalizes).
+
 ## Run
 
 ```
 python states_serialize.py
+python day2-state_machines.py
 ```
 
 Enter a user id, a query, then inputs. Press `1` to pause (checkpoint and exit)
