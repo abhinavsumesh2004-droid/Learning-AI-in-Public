@@ -11,6 +11,8 @@ from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.checkpoint.sqlite import SqliteSaver
 from langchain_core.runnables import RunnableConfig
 
+from langgraph.types import interrupt,Command
+
 conn = sqlite3.connect("checkpoints.sqlite", check_same_thread=False)
 memory = SqliteSaver(conn)
 
@@ -133,6 +135,18 @@ def check(state: AgentState):
 
 
 
+def validate_response(state:AgentState):
+    update=interrupt(
+        {
+            "instruction":"Type True if the classification is correct",
+            "classification":state["category"]
+        }
+    )
+    if update:
+        return state
+    return Command(goto=END)
+
+
 def retry_router(state: AgentState):
 
     if state["retry_count"] >= 2:
@@ -152,11 +166,12 @@ graph.add_node("research", research)
 graph.add_node("check", check)
 
 
+
 graph.add_edge(START, "classify")
 
 
 graph.add_conditional_edges(
-    "classify",
+    "validate",
     cat_router,
     {
         "casual": "llm",
@@ -165,6 +180,9 @@ graph.add_conditional_edges(
     }
 )
 
+graph.add_node("validate", validate_response)
+
+graph.add_edge("classify","validate")
 
 graph.add_edge("llm", END)
 graph.add_edge("research", END)
@@ -189,7 +207,7 @@ graph = graph.compile(checkpointer=memory)
 
 config: RunnableConfig = {"configurable": {"thread_id": "3"}}
 
-result = graph.invoke({
+initial = graph.stream_events({
     "messages": [
         {
             "role": "user",
@@ -199,10 +217,13 @@ result = graph.invoke({
     "category": "",
     "retry_count": 0,
     "query":query
-},config)
+},config,version="v3")
+
+#print(initial.interrupts) 
+resume=graph.stream_events(Command(resume=True), config=config,version="v3")
 
 
-print("\nFINAL STATE:")
+
 #print(result)
 
-print(graph.get_state(config))
+print(resume)
