@@ -1,12 +1,38 @@
 # Stage 1 — Agent Architecture & State Machines
 
-Small demos of durable agent state and explicit state machines: keeping a
-conversation's state in memory, writing it to disk, resuming it after the
-process exits, and driving transitions through a table instead of ad-hoc code.
+A hands-on learning log for agent state: start with plain Python dicts and JSON,
+build a state machine by hand, then rebuild the same ideas in LangGraph and see
+which problems the framework actually solves.
 
 > **Scope:** these are learning sketches to get the concepts clear, not
 > production code. Error handling, atomic writes, and complete transition
 > coverage are intentionally left for later.
+
+## Who this is for
+
+Someone learning agent architecture who wants the concepts *before* the
+framework. Each day is a working script you can run and break.
+
+## Why build it by hand first
+
+Using LangGraph without the underlying model makes it look like magic: a graph,
+a checkpointer, a pause, a resume. Building the same thing with `json.dump` and
+a transition table first makes each framework feature answer a problem you have
+already felt:
+
+| Hand-built (days 1–2) | LangGraph (day 3) |
+| --- | --- |
+| `state` dict | `TypedDict` state schema |
+| `json.load` / `json.dump` | checkpointer (`SqliteSaver`) |
+| `state.json` keyed by user id | `thread_id` |
+| `if/elif` on `current_pos` | conditional edges + path map |
+| transition table `(state, event) -> next` | nodes + edges, routers |
+| `while True` loop | the graph runtime |
+| "pause and resume" by hand | `interrupt()` + `Command(resume=...)` |
+| reading `state.json` with `cat` | `get_state` / `get_state_history` |
+
+The framework removes boilerplate, not the concepts. You still choose what state
+is, when to save it, and which transitions are legal.
 
 ## Files
 
@@ -14,13 +40,13 @@ process exits, and driving transitions through a table instead of ad-hoc code.
 | --- | --- |
 | `states_serialize.py` | Day 1: load state, append input, save state |
 | `day2-state_machines.py` | Day 2: transition table, events, resume |
-| `day3-langraph.py` | Day 3: LangGraph graph, router, retry cycle, checkpointer |
+| `day3-langraph.py` | Day 3: LangGraph graph, router, retry cycle, checkpointer, interrupt |
 | `day-langgraph-tracing.py` | Day 3: inspect checkpoints from SQLite |
 | `state.json` | Checkpoints, keyed by user id |
 | `sessions.json` | Registry of known sessions (status, metadata) |
 | `checkpoints.sqlite` | LangGraph checkpoint store (generated at runtime) |
 
-## State shape
+## State shape (days 1–2)
 
 ```json
 {
@@ -95,44 +121,69 @@ state.
   DAG cannot express that.
 
 The macro loop (`while True`) still drives the machine directly in
-`day2-state_machines.py`; inverting it so the loop only dispatches on the
-current state is the next exercise (and what LangGraph formalizes).
+`day2-state_machines.py`; LangGraph's job is to replace exactly that loop.
 
 ## Day 3 — LangGraph
 
-The day 2 ideas, but the framework owns the loop: a graph of nodes over a typed
-state, with conditional edges as the transition table and a checkpointer as the
-serializer.
+The day 2 ideas with the framework owning the loop: a graph of nodes over a
+typed state, with conditional edges as the transition table and a checkpointer as
+the serializer.
 
-- **Graph = state schema + nodes + edges.** `AgentState` (a `TypedDict`) is the
-  channel set; each node returns a *partial* update, not the whole state.
+### The mental model
+
+- **Graph = state schema + nodes + edges.** `AgentState` (a `TypedDict`) lists
+  the channels. Each node receives the state and returns a *partial* update.
 - **Reducers decide merging.** `messages: Annotated[list, add_messages]`
   appends. Fields without a reducer (`category`, `retry_count`, `query`) are
   overwritten by whatever a node returns.
-- **Conditional edges are the table.** `cat_router` maps state to one of
+- **Conditional edges are the table.** `cat_router` maps state to
   `{"casual", "research", "retry"}`; the path map names the destination node.
 - **Cycles are edges.** `check -> classify` is a real retry cycle, bounded by
   `retry_count` (or `recursion_limit`).
-- **Checkpointers.** `InMemorySaver` dies with the process; `SqliteSaver` writes
-  to `checkpoints.sqlite`, keyed by `thread_id`, and survives restarts.
+- **Nodes can jump with `Command(goto=...)`.** Used here to end the graph from
+  the validation node without a router.
+
+### Checkpointing
+
+- **`InMemorySaver` dies with the process; `SqliteSaver` persists.** The graph
+  here uses `SqliteSaver` writing to `checkpoints.sqlite`, keyed by `thread_id`,
+  so state survives restarts.
 - **Pass only new input after the first run.** Passing `retry_count: 0` again
   overwrites the checkpointed value — channels without reducers don't "resume",
   they get replaced.
-- **`get_state` returns a snapshot.** Use `.values`, `.next`, `.config`; the
+- **`get_state` returns a `StateSnapshot`.** Use `.values`, `.next`, `.config`;
   `.config` is the replay handle. `get_state_history` walks every step.
 - **Checkpoints store state, not prompts.** A prompt is derived from state +
   code (or logged separately for observability). To see what a node received,
   inspect the snapshot whose `next` is that node.
 - **`messages[-1]` is positional guessing.** After `classify` appends its
   "Classification: ..." message, `llm` reading `[-1]` answers the label instead
-  of the query. Pin the query in its own state field.
-- **Tracing from another process.** `SqliteSaver.list(config)` yields
-  `CheckpointTuple`s; the next node is visible in the `branch:to:<node>`
-  channels of `checkpoint["channel_values"]`.
+  of the query. Pin the query in its own state field (`query: str`).
 
-Still open: `interrupt()` for human-in-the-loop pause/resume, streaming
-(`stream_mode="updates"`), and time travel via `update_state` / replaying an old
-`checkpoint_id`.
+### Human-in-the-loop
+
+- `interrupt(payload)` pauses the graph; the run returns with `__interrupt__`.
+- `Command(resume=value)` re-runs the node, and `interrupt()` returns `value`.
+- The node **re-executes from the top** on resume, so code before `interrupt()`
+  runs twice — keep side effects after it.
+- Requires a checkpointer, and the resume must use the same `thread_id`.
+
+### Streaming (v3 in this version)
+
+- `graph.stream_events(..., version="v3")` returns a **lazy** `GraphRunStream`.
+- Nothing executes until you read it: iterate it, or access `.interrupts` /
+  `.output`. Printing the stream object runs nothing.
+- v2 (`stream_events()` with no version) raises `NotImplementedError` in this
+  LangGraph version; use `stream()`/`astream()` or v3.
+
+### Tracing from another process
+
+- `SqliteSaver.list(config)` yields `CheckpointTuple`s; the next node appears in
+  the `branch:to:<node>` channels of `checkpoint["channel_values"]`.
+- `day-langgraph-tracing.py` prints step, next node, last message, and
+  `checkpoint_id` per snapshot — no need to rebuild the graph.
+
+Still open: time travel (`update_state`, replaying an old `checkpoint_id`).
 
 ## Run
 
@@ -147,5 +198,5 @@ Day 3 needs `GROQ_API_KEY` in `.env` and the dependencies in `.venv`
 (`langgraph`, `langchain-core`, `groq`, `python-dotenv`). The graph currently
 uses `openai/gpt-oss-120b`; change `MODEL` for another Groq model.
 
-Enter a user id, a query, then inputs. Press `1` to pause (checkpoint and exit)
-or `2` to continue.
+Days 1–2: enter a user id, a query, then inputs. Press `1` to pause (checkpoint
+and exit) or `2` to continue.
