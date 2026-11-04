@@ -24,51 +24,32 @@ I use AI coding agents as implementation partners in some experiments. Their
 output is still something to inspect: I want to understand the structure, test
 the behaviour, identify gaps, and document both useful results and mistakes.
 
-## Stage roadmap and task list
+## Stage tasks
 
-This is a working checklist, not a claim that every topic is fully mastered.
-"Completed" means I have worked through an implementation or experiment; it
-does not mean I have exhausted the topic.
+The topics below are the tasks I am working through in this stage. Some have
+been explored in code; others remain to be revisited or completed.
 
-| Topic | Tasks | Status |
-| --- | --- | --- |
-| State and serialization | Represent workflow state; load and save JSON; understand serialization vs. in-memory state; examine persistence risks | Completed |
-| Checkpointing basics | Preserve multiple sessions; understand what is and is not persisted; consider how a run should resume | Completed |
-| State machines | Define states and events; create a transition table; reject illegal transitions; model cycles and terminal states | Completed |
-| DAGs and cyclic workflows | Compare one-way graphs with workflows that revisit earlier states | Completed |
-| LangGraph foundations | Define typed state; create nodes and edges; understand partial state updates and reducers | Completed |
-| Routing and retries | Add conditional routing; model bounded retry cycles | Completed |
-| Durable checkpoints | Use a SQLite checkpointer and session/thread identifiers; inspect saved state | Completed |
-| Human-in-the-loop | Pause with \`interrupt()\`; resume with \`Command(resume=...)\`; examine node re-execution | Completed |
-| Streaming | Observe graph execution and understand lazy stream consumption | Completed |
-| Tracing | Inspect checkpoint history and identify the next node and checkpoint ID | Completed |
-| Time travel | Experiment with \`update_state\` and replay from an earlier checkpoint | Planned |
-| Framework comparison | Compare the workflow model with Temporal.io and note where the abstractions differ | Planned |
-| Integrated practice project | Combine classification, branching, interrupts, checkpointing, approval, and recovery in a CLI assistant | Completed — review and learning notes ongoing |
-
-The status describes the work currently represented in this repository. I may
-revise it as I revisit topics or find gaps.
-
-## Diagrams and working notes
-
-I want to include hand-drawn diagrams alongside the code. The diagrams are
-intended to capture my current understanding, so they may be revised as I learn
-more. Photos or scans can be added under a \`diagrams/\` directory and linked
-here.
-
-Suggested diagrams for this stage:
-
-- \`diagrams/day-1-state-and-serialization.jpg\` — in-memory state, file
-  persistence, and loading state on a later run.
-- \`diagrams/day-2-state-machine.jpg\` — states, events, transition table,
-  terminal states, and a retry cycle.
-- \`diagrams/day-3-langgraph.jpg\` — state schema, nodes, normal edges,
-  conditional routing, and checkpointing.
-- \`diagrams/personal-assistant-flow.jpg\` — the end-to-end assistant workflow,
-  including approval and rejection paths.
-
-These are proposed filenames; the diagrams will be linked once the drawings
-have been added.
+- Represent workflow state and distinguish in-memory state from serialized data.
+- Load and save JSON state, preserving multiple sessions.
+- Understand persistence risks and how atomic writes can help.
+- Define state-machine states and events.
+- Build a transition table and reject illegal transitions.
+- Model cycles, terminal states, and state reachability.
+- Compare DAGs with cyclic workflows.
+- Define typed state in LangGraph.
+- Build graph nodes, edges, and conditional routing.
+- Understand partial state updates and reducers.
+- Implement bounded retry cycles.
+- Use a SQLite checkpointer with session/thread identifiers.
+- Inspect saved state and checkpoint history.
+- Pause workflows with `interrupt()` and resume with `Command(resume=...)`.
+- Understand what happens when an interrupted node is re-executed.
+- Stream graph execution and inspect node updates.
+- Trace execution using checkpoint IDs and state snapshots.
+- Explore `update_state` and replay from an earlier checkpoint.
+- Compare the workflow model with Temporal.io.
+- Combine classification, branching, interrupts, checkpointing, approval, and
+  recovery in an integrated CLI project.
 
 ## Why build it by hand first
 
@@ -196,14 +177,6 @@ graph of nodes, conditional routing, and a checkpointer.
 - The interrupted node starts executing again from its beginning on resume.
   Side effects before the interrupt therefore need care.
 - A checkpointer and the same \`thread_id\` are required to resume the run.
-
-### Streaming
-
-The current experiments also explore streaming graph execution. In the installed
-version, \`graph.stream_events(..., version="v3")\` returns a lazy stream: the
-workflow runs as the stream is consumed. Merely printing the stream object does
-not execute it. The version-specific behaviour is recorded here because it
-depends on the installed LangGraph version.
 
 ### Tracing from another process
 
