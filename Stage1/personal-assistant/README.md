@@ -38,24 +38,6 @@ was observed during manual testing.
 Statuses and legal transitions are defined in \`state.py\`. A transition not
 listed there raises \`ValueError\`.
 
-## Workflow diagram
-
-I plan to add a hand-drawn diagram of this flow so the branches and pause/resume
-points are easy to inspect. The drawing should show at least:
-
-1. Start and classify.
-2. The task path through detail gathering.
-3. The chat path that skips detail gathering.
-4. Drafting and the approval interrupt.
-5. Approval to the completed state.
-6. Rejection feedback returning to drafting.
-7. The maximum-revision path to the rejected state.
-8. Checkpoint/resume points around the interrupts.
-
-Suggested file location: \`diagrams/personal-assistant-flow.jpg\`. Once the
-drawing is added, link or embed it here. The diagram should reflect the
-implementation rather than an idealised version of the workflow.
-
 ## Files and responsibilities
 
 | File | Purpose |
@@ -166,7 +148,7 @@ checkpointing, and recovery interact. The manual tests also showed that a
 workflow can pass its happy path while still having awkward rejection
 behaviour, stale metadata, or unreliable model output.
 
-A useful next step for this learning exercise is to keep the implementation
-small, add the hand-drawn workflow diagram, and revisit the open questions
-above. The purpose of documenting them is to make the learning process and the
-limits of the current experiment visible.
+A useful next step for this learning exercise is to revisit the open questions
+above and check whether the current implementation and observations still
+support the conclusions recorded here. The purpose of documenting them is to
+make the learning process and the limits of the current experiment visible.
