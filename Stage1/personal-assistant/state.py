@@ -9,6 +9,7 @@ STATUSES = {
     "gathered",
     "drafted",
     "awaiting_approval",
+    "revising",
     "completed",
     "rejected",
 }
@@ -18,8 +19,9 @@ TRANSITIONS = {
     "intake": {"classified"},
     "classified": {"gathered", "drafted"},
     "gathered": {"drafted"},
+    "revising": {"drafted"},
     "drafted": {"awaiting_approval"},
-    "awaiting_approval": {"completed", "rejected"},
+    "awaiting_approval": {"completed", "rejected", "revising"},
     "completed": set(),
     "rejected": set(),
 }
@@ -31,6 +33,8 @@ class AssistantState(TypedDict):
     category: str
     details: str
     draft: str
+    feedback: str
+    revision_count: int
     status: str
 
 

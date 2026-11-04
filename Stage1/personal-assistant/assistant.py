@@ -25,15 +25,17 @@ load_dotenv()
 
 client = Groq()
 MODEL = "openai/gpt-oss-120b"
+MAX_REVISIONS = 2
 
 
 def now():
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
-def ask(prompt):
+def ask(prompt, temperature=0.2):
     response = client.chat.completions.create(
         model=MODEL,
+        temperature=temperature,
         messages=[{"role": "user", "content": prompt}],
     )
     return (response.choices[0].message.content or "").strip()
@@ -89,6 +91,16 @@ def gather(state: AssistantState):
 
 
 def draft(state: AssistantState):
+    feedback = state.get("feedback") or ""
+    revision_note = ""
+    if feedback:
+        revision_note = f"""
+    The user rejected the previous draft with this feedback:
+    {feedback}
+
+    Revise the draft to address that feedback. Do not repeat the rejected text.
+    """
+
     prompt = f"""
     You are a helpful personal assistant. Write a concise, practical draft
     response for the user.
@@ -96,8 +108,15 @@ def draft(state: AssistantState):
     Request: {state["request"]}
     Category: {state["category"]}
     Extra details: {state["details"] or "(none)"}
+    {revision_note}
 
-    The draft will be reviewed by the user before it is used.
+    Ground rules:
+    - Use ONLY the request and extra details above. Do not invent names, phone
+      numbers, addresses, dates, times, prices, or other facts.
+    - If something needed is missing, say what is missing and ask for it instead
+      of making it up.
+    - Do not use placeholder text like [Your Name] or [Phone Number].
+    - Keep it short and directly usable.
     """
     text = ask(prompt)
     return {
@@ -116,13 +135,30 @@ def approve(state: AssistantState):
         {
             "type": "approval",
             "draft": state["draft"],
-            "instruction": "Type approve or reject",
+            "instruction": "Type approve, or reject <reason>",
         }
     )
-    decision = str(decision or "").strip().lower()
-    if decision.startswith("a"):
+    decision = str(decision or "").strip()
+    lowered = decision.lower()
+
+    if lowered.startswith("a"):
         return {"status": advance(state, "completed")}
-    return {"status": advance(state, "rejected")}
+
+    revisions = state.get("revision_count", 0)
+    if revisions >= MAX_REVISIONS:
+        return {"status": advance(state, "rejected")}
+
+    return {
+        "feedback": decision or "rejected without a reason",
+        "revision_count": revisions + 1,
+        "status": advance(state, "revising"),
+    }
+
+
+def approve_router(state: AssistantState):
+    if state["status"] == "revising":
+        return "draft"
+    return "end"
 
 
 def build_graph(checkpointer):
@@ -145,7 +181,11 @@ def build_graph(checkpointer):
     graph.add_edge("gather", "draft")
     graph.add_edge("draft", "await_approval")
     graph.add_edge("await_approval", "approve")
-    graph.add_edge("approve", END)
+    graph.add_conditional_edges(
+        "approve",
+        approve_router,
+        {"draft": "draft", "end": END},
+    )
 
     return graph.compile(checkpointer=checkpointer)
 
@@ -210,6 +250,8 @@ def cmd_new(args):
             "category": "",
             "details": "",
             "draft": "",
+            "feedback": "",
+            "revision_count": 0,
             "status": "intake",
         },
     )

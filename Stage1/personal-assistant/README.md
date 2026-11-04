@@ -7,20 +7,27 @@ multi-step flow, durable checkpoints, and human-in-the-loop pause/resume.
 ## Flow
 
 ```
-START -> intake -> classify ──task──> gather ──> draft -> await_approval -> approve -> END
-                       └──────chat──────────────────┘
+START -> intake -> classify ──task──> gather ──> draft -> await_approval -> approve
+                       └──────chat──────────────────┘                         │
+                                                          approve ───────────> END
+                                                          reject  ──> draft (revise)
 ```
 
 - `classify` asks the LLM for `task` or `chat`.
 - `gather` pauses with `interrupt()` to ask for extra details (task only).
-- `draft` asks the LLM to write the response/plan.
-- `approve` pauses with `interrupt()`; `approve` completes, anything else rejects.
+- `draft` asks the LLM to write the response/plan, grounded in the request and
+  details; on a revision it also receives the rejection feedback.
+- `approve` pauses with `interrupt()`:
+  - `approve` → `completed`
+  - `reject <reason>` → back to `draft` with the reason as feedback
+  - after `MAX_REVISIONS` (2) rejections → `rejected`
 
 Statuses and legal transitions live in `state.py`:
 
 ```
 intake -> classified -> gathered -> drafted -> awaiting_approval -> completed
-                     \-> drafted                                  \-> rejected
+                     \-> drafted                    │  \-> revising -> drafted
+                                                    └-> rejected (revision cap)
 ```
 
 Any other transition raises `ValueError`.
@@ -77,6 +84,11 @@ Requires `GROQ_API_KEY` in `Stage1/.env`. Model is set by `MODEL` in
 - Interrupts require a checkpointer; the same `thread_id` must be used to resume.
 - On resume, the interrupted node re-executes from the top, so keep side effects
   after `interrupt()`.
+- Rejection is not terminal until the revision cap is hit; the rejection reason
+  is fed into the next `draft` call.
+- Drafts are generated at `temperature=0.2` with instructions to use only the
+  request + details and to ask for missing facts instead of inventing them. This
+  reduces but does not eliminate hallucination.
 - Classification output is coerced to `task` when the model returns anything
   unexpected; a stricter schema would be better.
 - No concurrency control: two processes resuming the same session will race.
