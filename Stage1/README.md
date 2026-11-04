@@ -1,224 +1,266 @@
 # Stage 1 — Agent Architecture & State Machines
 
-A hands-on learning log for agent state: start with plain Python dicts and JSON,
-build a state machine by hand, then rebuild the same ideas in LangGraph and see
-which problems the framework actually solves.
+This stage is a practical exploration of how agent workflows manage state, move
+between steps, pause, and resume. The work starts with plain Python dictionaries
+and JSON, moves to a state machine built by hand, and then revisits the same
+ideas using LangGraph.
 
-> **Scope:** these are learning sketches to get the concepts clear, not
-> production code. Error handling, atomic writes, and complete transition
-> coverage are intentionally left for later.
+The aim is to understand the ideas behind the framework by building small
+experiments, observing their behaviour, and recording what still needs work.
+These scripts are learning exercises, not production implementations.
 
-## Who this is for
+## What I am trying to learn
 
-Someone learning agent architecture who wants the concepts *before* the
-framework. Each day is a working script you can run and break.
+- How to represent the state of a multi-step workflow.
+- How to persist state so a process can continue after it stops.
+- How to make allowed and disallowed transitions explicit.
+- How to model branching, retries, and cycles.
+- How graph frameworks handle execution, checkpointing, and human approval.
+- How to inspect a workflow when its behaviour is not what I expected.
+- Where a framework helps, and which design decisions still belong to the
+  developer.
+
+I use AI coding agents as implementation partners in some experiments. Their
+output is still something to inspect: I want to understand the structure, test
+the behaviour, identify gaps, and document both useful results and mistakes.
+
+## Stage roadmap and task list
+
+This is a working checklist, not a claim that every topic is fully mastered.
+"Completed" means I have worked through an implementation or experiment; it
+does not mean I have exhausted the topic.
+
+| Topic | Tasks | Status |
+| --- | --- | --- |
+| State and serialization | Represent workflow state; load and save JSON; understand serialization vs. in-memory state; examine persistence risks | Completed |
+| Checkpointing basics | Preserve multiple sessions; understand what is and is not persisted; consider how a run should resume | Completed |
+| State machines | Define states and events; create a transition table; reject illegal transitions; model cycles and terminal states | Completed |
+| DAGs and cyclic workflows | Compare one-way graphs with workflows that revisit earlier states | Completed |
+| LangGraph foundations | Define typed state; create nodes and edges; understand partial state updates and reducers | Completed |
+| Routing and retries | Add conditional routing; model bounded retry cycles | Completed |
+| Durable checkpoints | Use a SQLite checkpointer and session/thread identifiers; inspect saved state | Completed |
+| Human-in-the-loop | Pause with \`interrupt()\`; resume with \`Command(resume=...)\`; examine node re-execution | Completed |
+| Streaming | Observe graph execution and understand lazy stream consumption | Completed |
+| Tracing | Inspect checkpoint history and identify the next node and checkpoint ID | Completed |
+| Time travel | Experiment with \`update_state\` and replay from an earlier checkpoint | Planned |
+| Framework comparison | Compare the workflow model with Temporal.io and note where the abstractions differ | Planned |
+| Integrated practice project | Combine classification, branching, interrupts, checkpointing, approval, and recovery in a CLI assistant | Completed — review and learning notes ongoing |
+
+The status describes the work currently represented in this repository. I may
+revise it as I revisit topics or find gaps.
+
+## Diagrams and working notes
+
+I want to include hand-drawn diagrams alongside the code. The diagrams are
+intended to capture my current understanding, so they may be revised as I learn
+more. Photos or scans can be added under a \`diagrams/\` directory and linked
+here.
+
+Suggested diagrams for this stage:
+
+- \`diagrams/day-1-state-and-serialization.jpg\` — in-memory state, file
+  persistence, and loading state on a later run.
+- \`diagrams/day-2-state-machine.jpg\` — states, events, transition table,
+  terminal states, and a retry cycle.
+- \`diagrams/day-3-langgraph.jpg\` — state schema, nodes, normal edges,
+  conditional routing, and checkpointing.
+- \`diagrams/personal-assistant-flow.jpg\` — the end-to-end assistant workflow,
+  including approval and rejection paths.
+
+These are proposed filenames; the diagrams will be linked once the drawings
+have been added.
 
 ## Why build it by hand first
 
-Using LangGraph without the underlying model makes it look like magic: a graph,
-a checkpointer, a pause, a resume. Building the same thing with `json.dump` and
-a transition table first makes each framework feature answer a problem you have
-already felt:
+Using LangGraph without the underlying model can make a graph, checkpointer, or
+pause/resume mechanism feel like magic. Building similar behaviour with
+\`json.dump\` and a transition table first makes each framework feature answer a
+problem encountered in a smaller implementation.
 
 | Hand-built (days 1–2) | LangGraph (day 3) |
 | --- | --- |
-| `state` dict | `TypedDict` state schema |
-| `json.load` / `json.dump` | checkpointer (`SqliteSaver`) |
-| `state.json` keyed by user id | `thread_id` |
-| `if/elif` on `current_pos` | conditional edges + path map |
-| transition table `(state, event) -> next` | nodes + edges, routers |
-| `while True` loop | the graph runtime |
-| "pause and resume" by hand | `interrupt()` + `Command(resume=...)` |
-| reading `state.json` with `cat` | `get_state` / `get_state_history` |
+| \`state\` dict | \`TypedDict\` state schema |
+| \`json.load\` / \`json.dump\` | checkpointer (\`SqliteSaver\`) |
+| \`state.json\` keyed by user id | \`thread_id\` |
+| \`if/elif\` on \`current_pos\` | conditional edges + path map |
+| transition table \`(state, event) -> next\` | nodes + edges + routers |
+| \`while True\` loop | graph runtime |
+| hand-built pause/resume | \`interrupt()\` + \`Command(resume=...)\` |
+| inspect JSON file | \`get_state\` / \`get_state_history\` |
 
-The framework removes boilerplate, not the concepts. You still choose what state
-is, when to save it, and which transitions are legal.
+The framework reduces some of the plumbing, but the decisions about state,
+transitions, persistence, and recovery still need to be made.
 
 ## Files
 
 | File | Purpose |
 | --- | --- |
-| `states_serialize.py` | Day 1: load state, append input, save state |
-| `day2-state_machines.py` | Day 2: transition table, events, resume |
-| `day3-langraph.py` | Day 3: LangGraph graph, router, retry cycle, checkpointer, interrupt |
-| `day-langgraph-tracing.py` | Day 3: inspect checkpoints from SQLite |
-| `personal-assistant/` | Practice project combining days 1–3 (see its README) |
-| `state.json` | Checkpoints, keyed by user id |
-| `sessions.json` | Registry of known sessions (status, metadata) |
-| `checkpoints.sqlite` | LangGraph checkpoint store (generated at runtime) |
-
-## State shape (days 1–2)
-
-```json
-{
-  "u-001": {
-    "user_id": "u-001",
-    "query": "what can you do with the given info",
-    "current_pos": "2",
-    "inputs": ["my name is abhinav", "I am learning AI now"],
-    "anlaysis": ""
-  }
-}
-```
-
-## Core loop
-
-```
-load (deserialize) -> mutate one user's record -> dump (serialize) the whole collection
-```
-
-The file is the source of truth for existence; the dict is the source of truth
-during a run.
+| \`states_serialize.py\` | Day 1: load state, append input, save state |
+| \`day2-state_machines.py\` | Day 2: transition table, events, resume |
+| \`day3-langraph.py\` | Day 3: LangGraph graph, router, retry cycle, checkpointer, interrupt |
+| \`day-langgraph-tracing.py\` | Day 3: inspect checkpoints from SQLite |
+| \`personal-assistant/\` | Practice project combining the earlier concepts |
+| \`state.json\` | Runtime state keyed by user id |
+| \`sessions.json\` | Registry of known sessions |
+| \`checkpoints.sqlite\` | LangGraph checkpoint store generated at runtime |
 
 ## Day 1 — States and serialization
 
-- **State vs. serialization.** State is the in-memory dict. Serialization is
-  turning it into bytes on disk; deserialization is reading it back. Without the
-  file, state dies with the process.
-- **Checkpointing.** `state.json` exists so a run interrupted by a crash or OOM
-  can be resumed instead of restarted.
-- **Mutate, don't rebuild.** Writing a fresh `{user_id: record}` each run deletes
-  every other user's checkpoint. Load the existing collection first, then change
+The first exercises use a dictionary as the in-memory state and a JSON file as
+the persisted representation.
+
+- **State vs. serialization.** State is the in-memory dictionary.
+  Serialization turns it into a representation that can be stored; deserialization
+  reads it back. Without persistence, state disappears when the process ends.
+- **Checkpointing.** The purpose of saving state is to make it possible to
+  continue a run rather than always starting from scratch.
+- **Mutate, don't rebuild.** Writing a fresh \`{user_id: record}\` each run can
+  delete every other user's checkpoint. Load the existing collection and update
   only the current entry.
-- **In-memory changes are not persisted.** Updating `sessions` in memory without
-  a `json.dump` leaves that change on disk untouched.
-- **`json.dump()` returns `None`.** It writes to a file object; it does not
-  return the data.
-- **Writes are destructive first.** `open(path, "w")` truncates immediately. A
-  crash mid-dump can leave an empty or half-written file, destroying the very
-  checkpoint it was meant to protect.
-- **Atomic writes.** Write to `state.json.tmp`, `flush()` + `os.fsync()`, then
-  `os.replace(tmp, path)`. Readers then see either the old file or the new one,
-  never a partial one.
-- **Resume policy is separate from persistence.** Storing state and deciding
-  which state to load (last paused, explicit id, etc.) are different concerns.
-- **One source of truth.** If both the registry and the checkpoint file can
-  answer "does this user exist?", they can disagree.
+- **In-memory changes are not persisted.** Updating a dictionary without writing
+  it back leaves the on-disk version unchanged.
+- **\`json.dump()\` returns \`None\`.** It writes to a file object; it does not
+  return the serialized data.
+- **Writes can be destructive.** Opening a file in \`"w"\` mode truncates it.
+  A crash during a write can leave an incomplete checkpoint.
+- **Atomic writes.** A safer pattern is to write to a temporary file, flush and
+  sync it, then replace the original with \`os.replace()\`.
+- **Resume policy is separate from persistence.** Saving state and deciding
+  which saved state to resume are different concerns.
+- **One source of truth.** If both a registry and a checkpoint file answer
+  whether a session exists, they can disagree.
 
 ## Day 2 — State machines
 
-A state machine is: a set of named **states**, a set of **events**, and a
-**transition table** `(state, event) -> next_state`. Nothing else writes the
-state.
+A state machine consists of named **states**, **events**, and a transition
+function or table that determines the next state. The transition rules should
+be the authority for movement through the workflow.
 
-- **Events, not menu numbers.** The menu maps key presses to events
-  (`receive_query`, `received_input`, `user_pause`); the table decides where
-  they lead.
-- **Illegal transitions are rejected.** A missing `(state, event)` pair is a
-  guard. Rejection must actually stop or re-drive the flow — re-prompting and
-  then continuing anyway is not a guard.
-- **Persist the state name.** The checkpoint stores `current_pos` so a new
-  process can resume; an unknown value on load is corruption, not something to
-  guess.
-- **Resume is a transition, not a reset.** Don't rewrite the saved state to
-  `start` just to reuse a transition. That makes the state lie about the data
-  ("state laundering").
-- **Cycles are edges.** "Give more input" is `processing_input -> awaiting_input`
-  in the table — not two direct assignments inside a `while True`.
-- **No loose edges, no unreachable states.** Every resumable state needs a
-  resume path, every declared state must be reachable from the initial state,
-  and terminal states must be reachable too.
-- **DAG vs. cyclic.** This machine is cyclic: input → process → input again. A
-  DAG cannot express that.
+- **Events, not menu numbers.** The menu translates user input into events;
+  the transition table decides where those events lead.
+- **Illegal transitions should be rejected.** A missing state/event pair should
+  prevent the workflow from silently continuing.
+- **Persist the state name.** A saved state that is unknown when loaded should
+  be treated as invalid rather than guessed.
+- **Resume is a transition, not a reset.** Rewriting a saved state to \`start\`
+  just to reuse a transition can make the recorded state inconsistent with the
+  data it represents.
+- **Cycles are edges.** Asking for more input can be represented as a transition
+  back to an input state, rather than scattered assignments inside a loop.
+- **Check reachability.** Resumable states need a path forward; declared states
+  should be reachable; terminal states should be attainable.
+- **DAG vs. cyclic graph.** A DAG has no cycles. A workflow that can return to
+  an earlier state needs a cyclic graph.
 
-The macro loop (`while True`) still drives the machine directly in
-`day2-state_machines.py`; LangGraph's job is to replace exactly that loop.
+The hand-built script still uses a loop to drive the machine. The LangGraph
+exercise explores how a graph runtime can take over that responsibility.
 
 ## Day 3 — LangGraph
 
-The day 2 ideas with the framework owning the loop: a graph of nodes over a
-typed state, with conditional edges as the transition table and a checkpointer as
-the serializer.
+The LangGraph exercise revisits the state-machine ideas using a typed state, a
+graph of nodes, conditional routing, and a checkpointer.
 
-### The mental model
+### Mental model
 
-- **Graph = state schema + nodes + edges.** `AgentState` (a `TypedDict`) lists
-  the channels. Each node receives the state and returns a *partial* update.
-- **Reducers decide merging.** `messages: Annotated[list, add_messages]`
-  appends. Fields without a reducer (`category`, `retry_count`, `query`) are
-  overwritten by whatever a node returns.
-- **Conditional edges are the table.** `cat_router` maps state to
-  `{"casual", "research", "retry"}`; the path map names the destination node.
-- **Cycles are edges.** `check -> classify` is a real retry cycle, bounded by
-  `retry_count` (or `recursion_limit`).
-- **Nodes can jump with `Command(goto=...)`.** Used here to end the graph from
-  the validation node without a router.
+- **Graph = state schema + nodes + edges.** The \`AgentState\` TypedDict lists
+  the state channels. Nodes receive state and return partial updates.
+- **Reducers decide merging.** A field such as
+  \`messages: Annotated[list, add_messages]\` appends messages. Fields without a
+  reducer are generally overwritten by updates.
+- **Conditional edges are routing rules.** A router examines the state and
+  selects a destination node.
+- **Cycles are edges.** A retry can route back to an earlier node, with a
+  counter or recursion limit used to bound the loop.
+- **Nodes can use \`Command(goto=...)\`.** This is another way to combine a state
+  update with a routing decision.
 
 ### Checkpointing
 
-- **`InMemorySaver` dies with the process; `SqliteSaver` persists.** The graph
-  here uses `SqliteSaver` writing to `checkpoints.sqlite`, keyed by `thread_id`,
-  so state survives restarts.
-- **Pass only new input after the first run.** Passing `retry_count: 0` again
-  overwrites the checkpointed value — channels without reducers don't "resume",
-  they get replaced.
-- **`get_state` returns a `StateSnapshot`.** Use `.values`, `.next`, `.config`;
-  `.config` is the replay handle. `get_state_history` walks every step.
-- **Checkpoints store state, not prompts.** A prompt is derived from state +
-  code (or logged separately for observability). To see what a node received,
-  inspect the snapshot whose `next` is that node.
-- **`messages[-1]` is positional guessing.** After `classify` appends its
-  "Classification: ..." message, `llm` reading `[-1]` answers the label instead
-  of the query. Pin the query in its own state field (`query: str`).
+- **In-memory vs. durable storage.** An in-memory saver does not survive process
+  termination. The SQLite checkpointer stores checkpoints in
+  \`checkpoints.sqlite\`, associated with a \`thread_id\`.
+- **Pass only new input after the first run.** Supplying an old value again can
+  overwrite a checkpointed channel when no reducer is configured.
+- **Inspect snapshots.** \`get_state\` returns a snapshot with values, next
+  nodes, and configuration. \`get_state_history\` exposes earlier snapshots.
+- **Checkpoints store state, not necessarily prompts.** Prompts are often
+  constructed from state and code, or logged separately.
+- **Avoid positional assumptions.** Reading \`messages[-1]\` can select a
+  classification message rather than the original user query. Keeping the query
+  in its own state field makes its purpose explicit.
 
 ### Human-in-the-loop
 
-- `interrupt(payload)` pauses the graph; the run returns with `__interrupt__`.
-- `Command(resume=value)` re-runs the node, and `interrupt()` returns `value`.
-- The node **re-executes from the top** on resume, so code before `interrupt()`
-  runs twice — keep side effects after it.
-- Requires a checkpointer, and the resume must use the same `thread_id`.
+- \`interrupt(payload)\` pauses the graph and returns an interrupt to the caller.
+- \`Command(resume=value)\` supplies the value used to resume the interrupt.
+- The interrupted node starts executing again from its beginning on resume.
+  Side effects before the interrupt therefore need care.
+- A checkpointer and the same \`thread_id\` are required to resume the run.
 
-### Streaming (v3 in this version)
+### Streaming
 
-- `graph.stream_events(..., version="v3")` returns a **lazy** `GraphRunStream`.
-- Nothing executes until you read it: iterate it, or access `.interrupts` /
-  `.output`. Printing the stream object runs nothing.
-- v2 (`stream_events()` with no version) raises `NotImplementedError` in this
-  LangGraph version; use `stream()`/`astream()` or v3.
+The current experiments also explore streaming graph execution. In the installed
+version, \`graph.stream_events(..., version="v3")\` returns a lazy stream: the
+workflow runs as the stream is consumed. Merely printing the stream object does
+not execute it. The version-specific behaviour is recorded here because it
+depends on the installed LangGraph version.
 
 ### Tracing from another process
 
-- `SqliteSaver.list(config)` yields `CheckpointTuple`s; the next node appears in
-  the `branch:to:<node>` channels of `checkpoint["channel_values"]`.
-- `day-langgraph-tracing.py` prints step, next node, last message, and
-  `checkpoint_id` per snapshot — no need to rebuild the graph.
-
-Still open: time travel (`update_state`, replaying an old `checkpoint_id`).
+\`SqliteSaver.list(config)\` can be used to inspect checkpoint tuples. The
+tracing script prints the step, next node, last message, and checkpoint ID for
+each snapshot, allowing inspection without rebuilding the graph.
 
 ## Practice project — Personal Assistant
 
-`personal-assistant/` is where the Stage 1 ideas were combined into one flow. It
-is a small CLI assistant: classify a request, ask for details, draft a response,
-then pause for a human to approve or reject it. State lives in `SqliteSaver`
-checkpoints keyed by session id, with a `sessions.json` index.
+The \`personal-assistant/\` directory combines several of the stage concepts in a
+small CLI workflow: classify a request, gather details when needed, draft a
+response, and pause for human approval or rejection.
 
-It was built to check whether the concepts hold up together, and the testing
-found a few gaps:
+The initial implementation was developed with help from an AI coding agent.
+I used the project as an opportunity to inspect the generated structure, run
+manual scenarios, note unexpected behaviour, and make targeted changes. The
+project README records the flow, smoke tests, observations, and current
+limitations. It is a learning case study, not a claim that the assistant is
+production-ready.
 
-- rejection originally ended the run, which made the approval step pointless;
-  it now loops back to drafting with the rejection reason, capped after two
-  revisions;
-- drafts invented details when given little context; grounding instructions and a
-  lower temperature reduced this but did not remove it;
-- registry status was only written after a run completed, so paused sessions
-  looked stuck at `intake`.
+Some issues observed during testing:
 
-These were manual smoke tests rather than an automated suite. See
-`personal-assistant/README.md` for the full test table and the remaining limits.
+- Rejection originally ended the run. The flow was changed to return to drafting
+  with the rejection reason, with a limit of two revisions.
+- Drafts sometimes invented details when the request contained little context.
+  Grounding instructions and a lower temperature reduced this behaviour but
+  did not eliminate it.
+- The session registry was not updated at every pause. It is now updated after
+  each graph invocation.
 
-## Run
+The tests were manual CLI smoke tests, not an automated test suite. The full
+test table and remaining limitations are in
+[\`personal-assistant/README.md\`](personal-assistant/README.md).
 
-```
+## Run the experiments
+
+Run these from the \`Stage1\` directory:
+
+\`\`\`bash
 python states_serialize.py
 python day2-state_machines.py
 python day3-langraph.py
 python day-langgraph-tracing.py
-```
+\`\`\`
 
-Day 3 needs `GROQ_API_KEY` in `.env` and the dependencies in `.venv`
-(`langgraph`, `langchain-core`, `groq`, `python-dotenv`). The graph currently
-uses `openai/gpt-oss-120b`; change `MODEL` for another Groq model.
+Day 3 requires \`GROQ_API_KEY\` in \`.env\` and the dependencies in the virtual
+environment (\`langgraph\`, \`langchain-core\`, \`groq\`, and \`python-dotenv\`).
+The graph currently uses \`openai/gpt-oss-120b\`; change \`MODEL\` if using another
+Groq model.
 
-Days 1–2: enter a user id, a query, then inputs. Press `1` to pause (checkpoint
-and exit) or `2` to continue.
+For days 1–2, enter a user ID, a query, and then inputs. Press \`1\` to pause
+(checkpoint and exit) or \`2\` to continue.
+
+## Notes on scope
+
+The examples focus on understanding state and workflow behaviour. They do not
+yet cover every production concern, such as comprehensive automated testing,
+concurrent session updates, robust recovery from partial file writes in every
+path, or operational monitoring. Those are areas to revisit rather than
+assumptions this stage is intended to settle.
