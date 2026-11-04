@@ -42,6 +42,7 @@ is, when to save it, and which transitions are legal.
 | `day2-state_machines.py` | Day 2: transition table, events, resume |
 | `day3-langraph.py` | Day 3: LangGraph graph, router, retry cycle, checkpointer, interrupt |
 | `day-langgraph-tracing.py` | Day 3: inspect checkpoints from SQLite |
+| `personal-assistant/` | Practice project combining days 1–3 (see its README) |
 | `state.json` | Checkpoints, keyed by user id |
 | `sessions.json` | Registry of known sessions (status, metadata) |
 | `checkpoints.sqlite` | LangGraph checkpoint store (generated at runtime) |
@@ -184,6 +185,27 @@ the serializer.
   `checkpoint_id` per snapshot — no need to rebuild the graph.
 
 Still open: time travel (`update_state`, replaying an old `checkpoint_id`).
+
+## Practice project — Personal Assistant
+
+`personal-assistant/` is where the Stage 1 ideas were combined into one flow. It
+is a small CLI assistant: classify a request, ask for details, draft a response,
+then pause for a human to approve or reject it. State lives in `SqliteSaver`
+checkpoints keyed by session id, with a `sessions.json` index.
+
+It was built to check whether the concepts hold up together, and the testing
+found a few gaps:
+
+- rejection originally ended the run, which made the approval step pointless;
+  it now loops back to drafting with the rejection reason, capped after two
+  revisions;
+- drafts invented details when given little context; grounding instructions and a
+  lower temperature reduced this but did not remove it;
+- registry status was only written after a run completed, so paused sessions
+  looked stuck at `intake`.
+
+These were manual smoke tests rather than an automated suite. See
+`personal-assistant/README.md` for the full test table and the remaining limits.
 
 ## Run
 
