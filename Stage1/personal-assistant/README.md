@@ -9,13 +9,6 @@ ideas from the earlier scripts into one working flow and see where they break.
 
 ## Flow
 
-```
-START -> intake -> classify ──task──> gather ──> draft -> await_approval -> approve
-                       └──────chat──────────────────┘                         │
-                                                          approve ───────────> END
-                                                          reject  ──> draft (revise)
-```
-
 - `classify` asks the LLM for `task` or `chat`.
 - `gather` pauses with `interrupt()` to ask for extra details (task only).
 - `draft` asks the LLM to write the response, grounded in the request and
@@ -25,15 +18,8 @@ START -> intake -> classify ──task──> gather ──> draft -> await_appr
   - `reject <reason>` → back to `draft` with the reason as feedback
   - after `MAX_REVISIONS` (2) rejections → `rejected`
 
-Statuses and legal transitions live in `state.py`:
-
-```
-intake -> classified -> gathered -> drafted -> awaiting_approval -> completed
-                     \-> drafted                    │  \-> revising -> drafted
-                                                    └-> rejected (revision cap)
-```
-
-Any other transition raises `ValueError`.
+Statuses and legal transitions live in `state.py`; any transition not listed
+there raises `ValueError`.
 
 ## Files
 
